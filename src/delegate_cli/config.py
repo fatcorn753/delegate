@@ -10,6 +10,7 @@ from typing import Any
 
 READ = "read"
 EDIT = "edit"
+GITHUB = "github"  # ローカルのファイルには触れず、GitHub の読み取りだけを行う
 
 DEFAULTS: dict[str, Any] = {
     "guard": {
@@ -31,7 +32,14 @@ DEFAULTS: dict[str, Any] = {
         ],
         # .env.example のような見本ファイルは対象外にする
         "secret_ignore_globs": ["*.example", "*.sample", "*.template", "*.dist"],
-        "scan_depth": 3,
+        # 秘匿ファイルの扱いを委任先ごとに決める: allow(読ませる)/ mask(そのファイルだけ読ませない)/ refuse(委任しない)
+        "secret_policy": {"agy": "mask", "copilot": "mask"},
+        # ファイル名だけでなく中身(トークンや秘密鍵の形)でも判定する
+        "scan_content": True,
+        "max_file_bytes": 262144,
+        # mask は全ファイルを調べ切れたときだけ使う。上限に当たったら委任しない
+        "scan_depth": 12,
+        "max_scan_files": 20000,
         "skip_dirs": [".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".gradle"],
     },
     "backends": {
@@ -67,7 +75,7 @@ DEFAULTS: dict[str, Any] = {
         "gh": {
             "backend": "copilot",
             "fallback": "",
-            "mode": READ,
+            "mode": GITHUB,
             "model": "",
             "preamble": "Read-only GitHub task. Never create, edit, close, merge or comment on anything. "
             "Reply in the language of the request.",
@@ -136,5 +144,5 @@ def _validate(cfg: dict[str, Any]) -> None:
             b = t.get(key, "")
             if b and b not in backends:
                 raise ConfigError(f"tasks.{name}.{key}: unknown backend {b!r}")
-        if t.get("mode", READ) not in (READ, EDIT):
-            raise ConfigError(f"tasks.{name}.mode must be 'read' or 'edit'")
+        if t.get("mode", READ) not in (READ, EDIT, GITHUB):
+            raise ConfigError(f"tasks.{name}.mode must be 'read', 'edit' or 'github'")

@@ -108,7 +108,11 @@ class TestRun(Env):
         names = [c["name"] for c in self.calls()]
         self.assertEqual(names, ["agy", "copilot"])
         cp_argv = self.calls()[1]["argv"]
-        self.assertIn("write", cp_argv[cp_argv.index("--deny-tool") + 1])
+        self.assertIn(["--deny-tool", "write"], [cp_argv[i:i + 2] for i in range(len(cp_argv))])
+        self.assertIn(["--deny-tool", "shell"], [cp_argv[i:i + 2] for i in range(len(cp_argv))])
+        self.assertIn("--disallow-temp-dir", cp_argv)
+        at = cp_argv.index("--available-tools")
+        self.assertEqual(cp_argv[at + 1:at + 3], ["view", "glob"])
         self.assertNotIn("--model", cp_argv)  # agy 用のモデル名を copilot に渡さない
         recs = self.logged()
         self.assertEqual([r["ok"] for r in recs], [False, True])
@@ -199,12 +203,67 @@ class TestGuard(Env):
         code, _, _ = self.run_cli("summarize", "-f", str(f), "-C", str(self.work))
         self.assertEqual(code, cli.EXIT_GUARD)
 
-    def test_secret_file_refused(self):
+    def test_secret_file_masked_for_agy(self):
         (self.work / "deep" / "er").mkdir(parents=True)
-        (self.work / "deep" / "er" / ".env").write_text("TOKEN=x")
+        env = self.work / "deep" / "er" / ".env"
+        env.write_text("TOKEN=x")
         code, _, err = self.run_cli("survey", "q", "-C", str(self.work))
+        self.assertEqual(code, 0, err)
+        self.assertIn("hiding 1 secret-like file", err)
+        argv = self.calls()[0]["argv"]
+        deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+        self.assertIn(f"read_file({env.resolve()})", deny)
+
+    def test_secret_file_masked_for_copilot(self):
+        env = self.work / ".env"
+        env.write_text("TOKEN=x")
+        code, _, err = self.run_cli("ask", "q", "-C", str(self.work), "--backend", "copilot")
+        self.assertEqual(code, 0, err)
+        argv = self.calls()[0]["argv"]
+        self.assertIn(f"read({env.resolve()})", argv)
+        self.assertIn(f"write({env.resolve()})", argv)
+
+    def test_secret_detected_by_content(self):
+        bak = self.work / "config.json.migrated-to-server"
+        bak.write_text('{"token": "MTA' + "x" * 23 + '.GaBcDe.' + "y" * 30 + '"}')
+        key = self.work / "notes.txt"
+        key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n")
+        ok = self.work / "plain.json"
+        ok.write_text('{"token": "<your token here>"}')
+        found = guard.find_secrets(self.work, DEFAULTS["guard"]).secrets
+        self.assertEqual(sorted(f.name for f in found), ["config.json.migrated-to-server", "notes.txt"])
+
+    def test_git_config_with_credential_url(self):
+        (self.work / ".git").mkdir()
+        (self.work / ".git" / "config").write_text('[remote "origin"]\n\turl = https://me:ghp_' + "a" * 36 + "@github.com/x/y\n")
+        found = guard.find_secrets(self.work, DEFAULTS["guard"]).secrets
+        self.assertEqual([f.name for f in found], ["config"])
+
+    def test_policy_allow_passes_no_mask(self):
+        (self.work / ".env").write_text("TOKEN=x")
+        self.cfg.write_text(self.cfg.read_text().replace("[guard]\n", '[guard]\nsecret_policy = {agy = "allow", copilot = "mask"}\n'))
+        code, _, err = self.run_cli("survey", "q", "-C", str(self.work))
+        self.assertEqual(code, 0, err)
+        argv = self.calls()[0]["argv"]
+        deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+        self.assertFalse(any(d.startswith("read_file(") for d in deny))
+        self.assertNotIn("hiding", err)
+
+    def test_policy_refuse_falls_back(self):
+        (self.work / ".env").write_text("TOKEN=x")
+        self.cfg.write_text(self.cfg.read_text().replace("[guard]\n", '[guard]\nsecret_policy = {agy = "refuse", copilot = "mask"}\n'))
+        code, out, err = self.run_cli("ask", "q", "-C", str(self.work))
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["name"] for c in self.calls()], ["copilot"])
+        self.assertIn("copilot answer", out)
+
+    def test_all_refused_is_guard_exit(self):
+        (self.work / ".env").write_text("TOKEN=x")
+        self.cfg.write_text(self.cfg.read_text().replace("[guard]\n", '[guard]\nsecret_policy = {agy = "refuse", copilot = "refuse"}\n'))
+        code, _, err = self.run_cli("ask", "q", "-C", str(self.work))
         self.assertEqual(code, cli.EXIT_GUARD)
-        self.assertIn(".env", err)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("refuse", err)
 
     def test_example_env_and_skipped_dirs_allowed(self):
         (self.work / ".env.example").write_text("TOKEN=")
@@ -213,17 +272,27 @@ class TestGuard(Env):
         code, _, err = self.run_cli("survey", "q", "-C", str(self.work))
         self.assertEqual(code, 0, err)
 
-    def test_secret_beyond_scan_depth_ignored(self):
+    def test_incomplete_scan_refuses_mask(self):
         d = self.work / "a" / "b" / "c" / "d"
         d.mkdir(parents=True)
         (d / ".env").write_text("x")
-        self.assertEqual(guard.find_secrets(self.work, DEFAULTS["guard"]), [])
+        self.cfg.write_text(self.cfg.read_text().replace("[guard]\n", "[guard]\nscan_depth = 2\n"))
+        scan = guard.find_secrets(self.work, {**DEFAULTS["guard"], "scan_depth": 2})
+        self.assertFalse(scan.complete)
+        self.assertEqual(scan.secrets, [])
+        code, _, err = self.run_cli("ask", "q", "-C", str(self.work))
+        self.assertEqual(code, cli.EXIT_GUARD)
+        self.assertIn("limit", err)
+        self.assertEqual(self.calls(), [])
 
     def test_check_command(self):
         code, out, _ = self.run_cli("check", str(self.secret_repo))
         self.assertEqual(code, cli.EXIT_GUARD)
+        (self.work / ".env").write_text("TOKEN=x")
         code, out, _ = self.run_cli("check", str(self.work))
         self.assertEqual(code, 0)
+        self.assertIn("1 secret-like file", out)
+        self.assertIn("agy: ok, hides 1 file", out)
 
 
 class TestEdit(Env):
@@ -258,7 +327,9 @@ class TestEdit(Env):
         self.assertNotIn("preexisting.txt", out)
         argv = self.calls()[0]["argv"]
         self.assertEqual(argv[argv.index("--allow-tool") + 1], "write")
-        self.assertIn("shell(git push)", argv)
+        at = argv.index("--available-tools")
+        self.assertEqual(argv[at + 1:at + 4], ["view", "glob", "apply_patch"])
+        self.assertIn(["--deny-tool", "shell"], [argv[i:i + 2] for i in range(len(argv))])
         self.assertNotIn("--allow-all", argv)
         self.assertNotIn("--allow-all-tools", argv)
 
@@ -267,6 +338,35 @@ class TestEdit(Env):
         code, _, err = self.run_cli("edit", "x", "-C", str(self.work), "--backend", "agy")
         self.assertEqual(code, 1)
         self.assertIn("read-only", err)
+
+
+class TestGithub(Env):
+    def test_gh_runs_in_empty_dir_with_repo_slug_and_mcp_only(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.work, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "git@github.com:me/proj.git"], cwd=self.work, check=True)
+        (self.work / ".env").write_text("TOKEN=x")  # gh はローカルを読まないので隠す必要もない
+        code, out, err = self.run_cli("gh", "list issues", "-C", str(self.work))
+        self.assertEqual(code, 0, err)
+        call = self.calls()[0]
+        self.assertNotEqual(Path(call["cwd"]).resolve(), self.work.resolve())
+        self.assertFalse(Path(call["cwd"]).exists(), "temporary dir is removed")
+        argv = call["argv"]
+        self.assertTrue(argv[argv.index("-p") + 1].startswith("Repository: me/proj"))
+        at = argv.index("--available-tools")
+        tools = []
+        for a in argv[at + 1:]:
+            if a.startswith("--"):
+                break
+            tools.append(a)
+        self.assertTrue(tools and all(t.startswith("github-mcp-server-") for t in tools), tools)
+        self.assertNotIn("view", tools)
+        self.assertIn("github-mcp-server(list_issues)", argv)
+        self.assertNotIn("hiding", err)
+
+    def test_gh_with_agy_is_rejected(self):
+        code, _, err = self.run_cli("gh", "x", "-C", str(self.work), "--backend", "agy")
+        self.assertEqual(code, 1)
+        self.assertIn("read-only tasks only", err)
 
 
 class TestStatsAndParsers(Env):

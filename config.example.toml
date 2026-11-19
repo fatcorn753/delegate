@@ -5,8 +5,11 @@
 deny_paths = [
   "~/work/secret-project",
 ]
-# 作業ディレクトリをこの深さまで調べ、秘匿ファイルらしきものがあれば拒否する
-scan_depth = 3
+# 秘匿ファイルの扱い: allow(読ませる)/ mask(そのファイルだけ読ませない)/ refuse(その委任先には委任しない)
+secret_policy = { agy = "mask", copilot = "mask" }
+# 秘匿ファイルを探す範囲。上限に達すると mask は使えない
+scan_depth = 12
+max_scan_files = 20000
 # secret_globs / secret_ignore_globs / skip_dirs も上書きできる(既定値は src/delegate_cli/config.py)
 
 [backends.agy]

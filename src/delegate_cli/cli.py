@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from . import __version__, backends, guard, runlog
-from .config import EDIT, ConfigError, config_path, load, log_path
+from .config import EDIT, GITHUB, ConfigError, config_path, load, log_path
 
 EXIT_OK, EXIT_FAIL, EXIT_GUARD, EXIT_USAGE = 0, 1, 2, 64
 
@@ -49,6 +51,16 @@ def _edit_report(cwd: Path, before_untracked: set[str]) -> str:
     if new:
         parts.append("new untracked files:\n  " + "\n  ".join(new))
     return "\n".join(parts) or "no file changes"
+
+
+def _github_slug(cwd: Path) -> str:
+    """origin が GitHub なら owner/name を返す。"""
+    url = _git(cwd, "remote", "get-url", "origin").stdout.strip()
+    for prefix in ("git@github.com:", "https://github.com/", "ssh://git@github.com/"):
+        if url.startswith(prefix):
+            slug = url[len(prefix):]
+            return slug[:-4] if slug.endswith(".git") else slug
+    return ""
 
 
 def _read_prompt(args: argparse.Namespace) -> str:
@@ -92,50 +104,80 @@ def cmd_run(args: argparse.Namespace, cfg: dict) -> int:
     add_dirs += [Path(os.path.realpath(Path(d).expanduser())) for d in (args.add_dir or [])]
 
     try:
-        guard.check(cwd, [*files, *add_dirs], cfg["guard"])
+        # gh タスクの委任先はローカルのファイルを一切読めないので、秘匿ファイルを調べる必要はない
+        scan = guard.Scan() if mode == GITHUB else guard.scan_all(cwd, [*files, *add_dirs], cfg["guard"])
+        if mode == GITHUB:
+            guard.check_paths([cwd], cfg["guard"])
         before = _edit_precheck(cwd) if mode == EDIT else set()
     except guard.GuardError as e:
         _err(f"refused: {e}")
         return EXIT_GUARD
 
     full_prompt = _compose(task.get("preamble", ""), prompt, files)
+    run_dir = cwd
+    if mode == GITHUB:
+        slug = _github_slug(cwd)
+        if slug:
+            full_prompt = f"Repository: {slug}\n\n{full_prompt}"
+        # 委任先が作業ディレクトリのファイルに触れないよう、空のディレクトリで動かす
+        run_dir = Path(tempfile.mkdtemp(prefix="delegate-gh-"))
     chain = [args.backend or task["backend"]]
     if not args.backend and not args.no_fallback and task.get("fallback"):
         chain.append(task["fallback"])
 
     results = []
-    for i, name in enumerate(chain):
-        # --model は最初の委任先にだけ効かせる。モデル名は委任先ごとに違うので、
-        # フォールバック先へ渡すと両方失敗するため(フォールバック先は既定モデル)。
-        if i == 0:
-            model = args.model if args.model is not None else (task.get("model", "") if name == task["backend"] else "")
-        else:
-            model = ""
-        try:
-            r = backends.run(name, cfg["backends"][name], full_prompt, cwd, model, mode, add_dirs, args.timeout)
-        except backends.BackendError as e:
-            r = backends.Result(backend=name, ok=False, error=str(e), model=model)
-        results.append(r)
-        runlog.append(log_path(), {
-            "ts": runlog.now(),
-            "task": args.task,
-            "backend": name,
-            "model": r.model,
-            "cwd": str(cwd),
-            "ok": r.ok,
-            "duration": r.duration,
-            "tokens_in": r.tokens_in,
-            "tokens_out": r.tokens_out,
-            "credits": r.credits,
-            "fallback_of": chain[0] if i else None,
-            "prompt_chars": len(full_prompt),
-            "error": r.error[:300],
-        })
-        if r.ok:
-            break
-        if i + 1 < len(chain):
-            first = r.error.strip().splitlines()[0] if r.error.strip() else "no answer"
-            _err(f"{name} failed ({first}); falling back to {chain[i + 1]}")
+    refused = []
+    try:
+        for i, name in enumerate(chain):
+            # --model は最初の委任先にだけ効かせる。モデル名は委任先ごとに違うので、
+            # フォールバック先へ渡すと両方失敗するため(フォールバック先は既定モデル)。
+            if i == 0:
+                model = args.model if args.model is not None else (task.get("model", "") if name == task["backend"] else "")
+            else:
+                model = ""
+            try:
+                masked = guard.decide(name, scan, cfg["guard"])
+            except guard.GuardError as e:
+                r = backends.Result(backend=name, ok=False, error=f"refused: {e}", model=model)
+                refused.append(name)
+            else:
+                if masked:
+                    _err(f"{name}: hiding {len(masked)} secret-like file(s) from the backend")
+                try:
+                    r = backends.run(name, cfg["backends"][name], full_prompt, run_dir, model, mode,
+                                     add_dirs, args.timeout, masked)
+                except backends.BackendError as e:
+                    r = backends.Result(backend=name, ok=False, error=str(e), model=model)
+            results.append(r)
+            runlog.append(log_path(), {
+                "ts": runlog.now(),
+                "task": args.task,
+                "backend": name,
+                "model": r.model,
+                "cwd": str(cwd),
+                "ok": r.ok,
+                "duration": r.duration,
+                "tokens_in": r.tokens_in,
+                "tokens_out": r.tokens_out,
+                "credits": r.credits,
+                "fallback_of": chain[0] if i else None,
+                "prompt_chars": len(full_prompt),
+                "secrets": len(scan.secrets),
+                "error": r.error[:300],
+            })
+            if r.ok:
+                break
+            if i + 1 < len(chain):
+                first = r.error.strip().splitlines()[0] if r.error.strip() else "no answer"
+                _err(f"{name} failed ({first}); falling back to {chain[i + 1]}")
+    finally:
+        if run_dir != cwd:
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+    if len(refused) == len(chain):
+        for r in results:
+            _err(r.error)
+        return EXIT_GUARD
 
     final = results[-1]
     edit_report = _edit_report(cwd, before) if mode == EDIT else None
@@ -169,18 +211,27 @@ def cmd_stats(args: argparse.Namespace, cfg: dict) -> int:
 
 
 def cmd_check(args: argparse.Namespace, cfg: dict) -> int:
-    paths = [Path(p) for p in (args.paths or ["."])]
-    try:
-        for p in paths:
-            if p.is_dir():
-                guard.check(p, [], cfg["guard"])
-            else:
-                guard.check(p.parent, [p], cfg["guard"])
-    except guard.GuardError as e:
-        print(f"refused: {e}")
-        return EXIT_GUARD
-    print("ok: delegation allowed")
-    return EXIT_OK
+    code = EXIT_OK
+    for raw in args.paths or ["."]:
+        p = Path(raw)
+        try:
+            scan = guard.scan_all(p, [], cfg["guard"]) if p.is_dir() else guard.scan_all(p.parent, [p], cfg["guard"])
+        except guard.GuardError as e:
+            print(f"{raw}: refused: {e}")
+            code = EXIT_GUARD
+            continue
+        state = "" if scan.complete else " (scan hit its limit)"
+        print(f"{raw}: {len(scan.secrets)} secret-like file(s){state}")
+        for s in scan.secrets[:10]:
+            print(f"  {s}")
+        for name in cfg["backends"]:
+            try:
+                masked = guard.decide(name, scan, cfg["guard"])
+                verdict = f"ok, hides {len(masked)} file(s)" if masked else "ok"
+            except guard.GuardError:
+                verdict = "refused"
+            print(f"  {name}: {verdict} (secret_policy={guard.policy_for(name, cfg['guard'])})")
+    return code
 
 
 def cmd_config(args: argparse.Namespace, cfg: dict) -> int:
@@ -190,6 +241,7 @@ def cmd_config(args: argparse.Namespace, cfg: dict) -> int:
         fb = f" -> {t['fallback']}" if t.get("fallback") else ""
         print(f"  {name:<10} {t['backend']}{fb}  mode={t.get('mode')} model={t.get('model') or 'default'}")
     print(f"  deny_paths: {len(cfg['guard'].get('deny_paths', []))}")
+    print(f"  secret_policy: {cfg['guard'].get('secret_policy')}")
     return EXIT_OK
 
 

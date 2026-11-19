@@ -82,6 +82,23 @@ class TestRun(Env):
         self.assertEqual((rec["backend"], rec["task"], rec["ok"]), ("agy", "survey", True))
         self.assertEqual((rec["tokens_in"], rec["tokens_out"]), (100, 15))
 
+    def test_survey_includes_file_listing(self):
+        (self.work / "src").mkdir()
+        (self.work / "src" / "main.py").write_text("x")
+        (self.work / "node_modules" / "p").mkdir(parents=True)
+        (self.work / "node_modules" / "p" / "i.js").write_text("x")
+        (self.work / ".git").mkdir()
+        (self.work / ".git" / "HEAD").write_text("x")
+        self.run_cli("survey", "q", "-C", str(self.work))
+        argv = self.calls()[0]["argv"]
+        prompt = argv[argv.index("-p") + 1]
+        self.assertIn("src/main.py", prompt)
+        self.assertNotIn("node_modules", prompt)
+        self.assertNotIn(".git/HEAD", prompt)
+        self.run_cli("ask", "q", "-C", str(self.work))
+        argv = self.calls()[1]["argv"]
+        self.assertNotIn("Files in the working directory", argv[argv.index("-p") + 1])
+
     def test_summarize_passes_flash_model_and_files(self):
         f = self.work / "notes.txt"
         f.write_text("hello")

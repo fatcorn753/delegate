@@ -51,6 +51,8 @@ DEFAULTS: dict[str, Any] = {
             "backend": "agy",
             "fallback": "copilot",
             "mode": READ,
+            # 作業ディレクトリのファイル一覧をプロンプトに添える
+            "list_files": True,
             "model": "",
             "preamble": "Read-only investigation. Do not modify any file. "
             "Answer with the conclusion first, concisely, citing file paths. "

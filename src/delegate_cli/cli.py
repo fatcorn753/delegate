@@ -72,6 +72,25 @@ def _read_prompt(args: argparse.Namespace) -> str:
     return (prompt or "").strip()
 
 
+def _file_listing(cwd: Path, guard_cfg: dict, limit: int = 400) -> str:
+    """作業ディレクトリのファイル一覧(相対パス)。
+
+    読み取り専用の agy はシェルを使えず、ファイル一覧を取る手段がないため、README のない
+    プロジェクトでは調べ始められない(2026-11 に確認)。delegate 側で一覧を渡す。
+    """
+    skip = set(guard_cfg.get("skip_dirs", []))
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(cwd):
+        dirnames[:] = sorted(d for d in dirnames if d not in skip and not d.startswith("."))
+        for f in sorted(filenames):
+            if f == ".DS_Store":
+                continue
+            paths.append(str((Path(dirpath) / f).relative_to(cwd)))
+            if len(paths) >= limit:
+                return "\n".join(paths) + f"\n... (truncated at {limit} files)"
+    return "\n".join(paths)
+
+
 def _compose(preamble: str, prompt: str, files: list[Path]) -> str:
     body = prompt
     if files:
@@ -114,6 +133,8 @@ def cmd_run(args: argparse.Namespace, cfg: dict) -> int:
         return EXIT_GUARD
 
     full_prompt = _compose(task.get("preamble", ""), prompt, files)
+    if task.get("list_files") and mode != GITHUB:
+        full_prompt += f"\n\nFiles in the working directory ({cwd}):\n{_file_listing(cwd, cfg['guard'])}"
     run_dir = cwd
     if mode == GITHUB:
         slug = _github_slug(cwd)

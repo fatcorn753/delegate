@@ -1,0 +1,35 @@
+# ~/.config/delegate/config.toml の例。書いた項目だけが既定値に上書きされる。
+
+[guard]
+# この配下では委任しない(秘匿情報を含むリポジトリなど)
+deny_paths = [
+  "~/work/secret-project",
+]
+# 作業ディレクトリをこの深さまで調べ、秘匿ファイルらしきものがあれば拒否する
+scan_depth = 3
+# secret_globs / secret_ignore_globs / skip_dirs も上書きできる(既定値は src/delegate_cli/config.py)
+
+[backends.agy]
+command = "agy"
+timeout = 600
+
+[backends.copilot]
+command = "copilot"
+timeout = 600
+
+# タスクごとの委任先・モデル・前置きの指示
+[tasks.survey]
+backend = "agy"
+fallback = "copilot"
+preamble = "Read-only investigation. Answer concisely in English."
+
+[tasks.summarize]
+model = "gemini-3.8-flash-low"
+
+# 独自タスクも追加できる(mode は "read" か "edit")
+[tasks.review]
+backend = "copilot"
+fallback = "agy"
+mode = "read"
+model = ""
+preamble = "Review the current diff for bugs. Do not modify files."

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delegate-cli"
+version = "0.1.0"
+description = "Delegate coding-assistant work to agy / GitHub Copilot CLI with guardrails, unified output and cost logs"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+delegate = "delegate_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

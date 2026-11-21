@@ -21,6 +21,7 @@ AI コーディングエージェント(Claude Code など)が、作業の一部
 | `ask` | agy | copilot | 読み取りのみ |
 | `gh` | copilot | なし | GitHub の読み取りのみ(ローカルのファイルには触れない) |
 | `edit` | copilot | なし | 作業ディレクトリ内のファイル書き込みのみ |
+| `implement` | copilot | なし | `edit` と同じ。テストは delegate が回して結果を差し戻す |
 
 権限は次の設定で絞っています。
 
@@ -30,6 +31,11 @@ AI コーディングエージェント(Claude Code など)が、作業の一部
   読み取りでは `view`・`glob`、編集では `view`・`glob`・`apply_patch` だけです。`--disallow-temp-dir` も付けます。
 - **copilot の編集**: 書き込みは許可しますが、シェルは使わせません。
   git 管理下で、追跡ファイルに未コミットの変更がないときだけ実行します。実行後に `git diff --stat` と新しい未追跡ファイルを表示します。
+- **implement**: 仕様書(`-f` のファイルか本文)を作業役に渡して実装させます。終わるたびに delegate が `--test` のコマンドを回し、
+  失敗したらテスト出力の末尾を同じ session(`--session-id`)へ差し戻します。最大 `--rounds` 回(既定 3)です。
+  作業役にはシェルを与えません。シェルがあると、秘匿ファイルの deny を `cat` で抜けられるためです。
+  差し戻すテスト出力からは、トークンや秘密鍵の形を `[REDACTED]` に伏せます。前提条件は `edit` と同じです。
+  終わったあとに HEAD が動いていたら(作業役が commit したら)失敗として扱います。
 - **gh**: 空の一時ディレクトリで動かし、GitHub MCP の読み取り用ツール(`list_issues` など)だけを許可します。
   リポジトリ名は `-C` の `origin` から渡します。
 
@@ -65,6 +71,7 @@ delegate summarize -f build.log "失敗の原因を3行で"
 delegate ask "Python の tomllib はどのバージョンから標準？"
 delegate gh "open な issue をラベル別に要約" -C path/to/repo
 delegate edit "foo() を bar() にリネーム" -C path/to/repo
+delegate implement -f spec.md -C path/to/repo --test "python3 -m pytest -q" --json
 echo "長いプロンプト" | delegate ask -
 delegate stats --days 7
 delegate check path/to/repo   # 委任できる場所かだけ確認
@@ -110,4 +117,9 @@ python3 -m unittest discover -s tests
 - 応答形式は、確認時点のバージョン(agy 1.5.12、Copilot CLI 1.0.114)に合わせています。
 - 安全装置は委任の入口での確認と、委任先 CLI の権限設定の組み合わせです。委任先の挙動そのものを保証するものではありません。
 - 秘匿ファイルの中身による判定はパターンに一致したものだけです。独自形式の秘密情報は `secret_globs` に名前を足してください。
+- `implement` の作業役は copilot だけです。agy で書き込みを許すと、headless では編集のあとにターンが終わらず、
+  `--print-timeout` まで止まりました(2026-11-21、agy 1.5)。
+- `implement` の費用: copilot は同じ session の累計を返すので、ラウンドごとに前回との差分を取って合計します。
+- `implement` のテストコマンドは、作業役が書いたコードをそのまま実行します。作業役のコードが秘匿ファイルを読んで出力すれば、
+  パターンに一致しない値は差し戻しに混ざりえます。秘匿情報のあるリポジトリでは `--test` の出力に注意してください。
 - Copilot は内容検索を使えないため、`survey` のフォールバック先としての調査力は agy より落ちます。

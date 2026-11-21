@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import EDIT, GITHUB
+from .config import EDIT, GITHUB, IMPLEMENT
 
 # agy の読み取り専用設定。deny は allow より優先されるため、コマンドは全面禁止にして
 # ファイル読み取りと検索系ツールだけで調べさせる(2026-11 時点の agy 1.5 で確認)。
@@ -79,6 +79,7 @@ def agy_settings(masked: list[Path]) -> dict:
 def build_agy_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: list[Path], timeout: int,
                    masked: list[Path] | None = None) -> list[str]:
     if mode != "read":
+        # 編集を許すと、headless で編集後にターンが終わらず print timeout まで止まった(2026-11-21)
         raise BackendError(f"agy backend supports read-only tasks only (not {mode})")
     argv = [
         cmd,
@@ -120,7 +121,7 @@ def parse_agy(code: int, out: str, err: str) -> Result:
 
 
 def build_copilot_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: list[Path],
-                       masked: list[Path] | None = None) -> list[str]:
+                       masked: list[Path] | None = None, session_id: str = "") -> list[str]:
     """Copilot にはシェルと内容検索ツールを一切与えない。
 
     2026-11 時点の copilot 1.0.114 で確認した抜け道:
@@ -138,7 +139,7 @@ def build_copilot_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: l
         argv += ["--deny-tool", "write", "--available-tools", *tools]
         for t in GITHUB_READ_TOOLS:
             argv += ["--allow-tool", f"github-mcp-server({t})"]
-    elif mode == EDIT:
+    elif mode in (EDIT, IMPLEMENT):
         argv += ["--allow-tool", "write", "--available-tools", "view", "glob", "apply_patch"]
     else:
         argv += ["--deny-tool", "write", "--available-tools", "view", "glob"]
@@ -148,6 +149,9 @@ def build_copilot_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: l
         argv += ["--model", model]
     for d in add_dirs:
         argv += ["--add-dir", str(d)]
+    if session_id:
+        # 同じ ID で呼ぶと前回の会話を引き継ぐ。差し戻しのたびに仕様とコードを読み直させないため
+        argv += ["--session-id", session_id]
     return argv
 
 
@@ -195,7 +199,8 @@ def parse_copilot(code: int, out: str, err: str) -> Result:
 
 
 def run(name: str, bcfg: dict, prompt: str, cwd: Path, model: str, mode: str,
-        add_dirs: list[Path], timeout: int | None = None, masked: list[Path] | None = None) -> Result:
+        add_dirs: list[Path], timeout: int | None = None, masked: list[Path] | None = None,
+        session_id: str = "") -> Result:
     timeout = int(timeout or bcfg.get("timeout", 600))
     cmd = bcfg.get("command", name)
     if name == "agy":
@@ -204,7 +209,7 @@ def run(name: str, bcfg: dict, prompt: str, cwd: Path, model: str, mode: str,
         r = parse_agy(code, out, err)
         r.model = r.model or model or "default"
     elif name == "copilot":
-        argv = build_copilot_argv(cmd, prompt, model, mode, add_dirs, masked)
+        argv = build_copilot_argv(cmd, prompt, model, mode, add_dirs, masked, session_id)
         code, out, err, dur = _run(argv, cwd, timeout)
         r = parse_copilot(code, out, err)
     else:

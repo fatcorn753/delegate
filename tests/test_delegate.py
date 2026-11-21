@@ -357,6 +357,103 @@ class TestEdit(Env):
         self.assertIn("read-only", err)
 
 
+class TestImplement(TestEdit):
+    """implement: 作業役の実装 → delegate がテスト → 失敗なら同じ session で差し戻す。"""
+
+    TWO_LINES = '[ "$(wc -l < impl.txt)" -ge 2 ] || { echo "need 2 lines"; exit 1; }'
+
+    def setUp(self):
+        super().setUp()
+        self.state = self.tmp / "state"
+        self.state.mkdir()
+        self.fenv = {"FAKE_MODE": "implement", "FAKE_STATE_DIR": str(self.state)}
+
+    def test_requires_test_command(self):
+        self.init_repo()
+        code, _, err = self.run_cli("implement", "spec", "-C", str(self.work), env=self.fenv)
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("--test", err)
+        self.assertEqual(self.calls(), [])
+
+    def test_requires_clean_git(self):
+        code, _, err = self.run_cli("implement", "spec", "-C", str(self.work), "--test", "true", env=self.fenv)
+        self.assertEqual(code, cli.EXIT_GUARD)
+        self.init_repo()
+        (self.work / "target.txt").write_text("dirty\n")
+        code, _, _ = self.run_cli("implement", "spec", "-C", str(self.work), "--test", "true", env=self.fenv)
+        self.assertEqual(code, cli.EXIT_GUARD)
+        self.assertEqual(self.calls(), [])
+
+    def test_retries_with_test_output_in_same_session_until_pass(self):
+        self.init_repo()
+        code, out, err = self.run_cli("implement", "add a line", "-C", str(self.work), "--test", self.TWO_LINES,
+                                      "--json", env=self.fenv)
+        self.assertEqual(code, 0, err)
+        d = json.loads(out)
+        self.assertTrue(d["passed"])
+        self.assertEqual([r["test_passed"] for r in d["rounds"]], [False, True])
+        # 累計値から差分を取るので、各ラウンドは 1 回分(200 / 0.25)になる
+        self.assertEqual([r["tokens_in"] for r in d["rounds"]], [200, 200])
+        self.assertEqual(d["tokens_in"], 400)
+        self.assertAlmostEqual(d["credits"], 0.5)
+        self.assertIn("impl.txt", d["edit_report"])
+        c = self.calls()
+        self.assertEqual(len(c), 2)
+        sid = [a["argv"][a["argv"].index("--session-id") + 1] for a in c]
+        self.assertEqual(sid[0], sid[1])
+        first, second = (a["argv"][a["argv"].index("-p") + 1] for a in c)
+        self.assertIn("add a line", first)
+        self.assertIn("need 2 lines", second)
+        for a in c:
+            argv = a["argv"]
+            self.assertIn(["--deny-tool", "shell"], [argv[i:i + 2] for i in range(len(argv))])
+            at = argv.index("--available-tools")
+            self.assertEqual(argv[at + 1:at + 4], ["view", "glob", "apply_patch"])
+        log = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([e["round"] for e in log], [1, 2])
+
+    def test_gives_up_after_rounds(self):
+        self.init_repo()
+        code, out, err = self.run_cli("implement", "x", "-C", str(self.work), "--test", "echo nope; exit 1",
+                                      "--rounds", "2", env=self.fenv)
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertIn("FAIL after 2 round(s)", out)
+        self.assertIn("nope", out)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_spec_file_is_inlined_not_added_as_dir(self):
+        self.init_repo()
+        spec = self.tmp / "spec.md"
+        spec.write_text("SPEC-BODY-123\n")
+        code, _, err = self.run_cli("implement", "-f", str(spec), "-C", str(self.work), "--test", "true",
+                                    env=self.fenv)
+        self.assertEqual(code, 0, err)
+        argv = self.calls()[0]["argv"]
+        self.assertIn("SPEC-BODY-123", argv[argv.index("-p") + 1])
+        self.assertNotIn("--add-dir", argv)
+
+    def test_agy_backend_is_rejected(self):
+        self.init_repo()
+        code, _, err = self.run_cli("implement", "x", "-C", str(self.work), "--test", "true",
+                                    "--backend", "agy", env=self.fenv)
+        self.assertEqual(code, cli.EXIT_FAIL)
+        self.assertIn("read-only", err)
+
+    def test_secret_masked_and_redacted_from_test_output(self):
+        self.init_repo()
+        (self.work / ".env").write_text("X=1\n")
+        token = "ghp_" + "a" * 36
+        code, _, err = self.run_cli("implement", "x", "-C", str(self.work), "--test",
+                                    "python3 -c \"print('ghp_' + 'a' * 36)\"; exit 1",
+                                    "--rounds", "2", env=self.fenv)
+        self.assertEqual(code, cli.EXIT_FAIL)
+        c = self.calls()
+        self.assertIn(f"read({(self.work / '.env').resolve()})", c[0]["argv"])
+        second = c[1]["argv"][c[1]["argv"].index("-p") + 1]
+        self.assertNotIn(token, second)
+        self.assertIn("[REDACTED]", second)
+
+
 class TestGithub(Env):
     def test_gh_runs_in_empty_dir_with_repo_slug_and_mcp_only(self):
         subprocess.run(["git", "init", "-q"], cwd=self.work, check=True)

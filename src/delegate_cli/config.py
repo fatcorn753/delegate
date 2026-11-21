@@ -11,6 +11,8 @@ from typing import Any
 READ = "read"
 EDIT = "edit"
 GITHUB = "github"  # ローカルのファイルには触れず、GitHub の読み取りだけを行う
+# 編集と同じ権限で書かせ、delegate がテストを回して結果を差し戻す反復を行う
+IMPLEMENT = "implement"
 
 DEFAULTS: dict[str, Any] = {
     "guard": {
@@ -90,6 +92,21 @@ DEFAULTS: dict[str, Any] = {
             "preamble": "Make only the requested change, nothing else. Do not commit, push or run "
             "destructive commands. Reply in the language of the request with a short summary.",
         },
+        "implement": {
+            # agy は編集後にターンが終わらず print timeout まで止まった(2026-11-21、agy 1.5)ので copilot に固定する
+            "backend": "copilot",
+            "fallback": "",
+            "mode": IMPLEMENT,
+            "model": "",
+            # テストを回して差し戻す最大回数(初回の実装を含む)
+            "rounds": 3,
+            "test_timeout": 600,
+            "preamble": "Implement the specification below in this repository. Change only what the "
+            "specification requires: no unrelated refactoring, no empty or placeholder comments, no unused "
+            "code. Keep the existing style. You cannot run commands; the caller runs the tests and sends "
+            "you the failures. Do not edit tests unless the specification asks for it. "
+            "Reply in the language of the specification with a short summary.",
+        },
     },
 }
 
@@ -146,5 +163,5 @@ def _validate(cfg: dict[str, Any]) -> None:
             b = t.get(key, "")
             if b and b not in backends:
                 raise ConfigError(f"tasks.{name}.{key}: unknown backend {b!r}")
-        if t.get("mode", READ) not in (READ, EDIT, GITHUB):
-            raise ConfigError(f"tasks.{name}.mode must be 'read', 'edit' or 'github'")
+        if t.get("mode", READ) not in (READ, EDIT, GITHUB, IMPLEMENT):
+            raise ConfigError(f"tasks.{name}.mode must be 'read', 'edit', 'github' or 'implement'")

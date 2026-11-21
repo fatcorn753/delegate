@@ -2,6 +2,7 @@
 """テスト用の偽 agy / copilot。argv を記録し、FAKE_MODE に応じた出力を返す。
 
 FAKE_MODE: ok | fail | garbage | edit(copilot のみ: cwd の target.txt を書き換える)
+          | implement(copilot のみ: 呼ばれるたびに impl.txt へ 1 行足し、使用量を session の累計で返す)
 """
 
 import json
@@ -33,15 +34,23 @@ if name == "agy":
         "usage": {"input_tokens": 100, "output_tokens": 10, "thinking_tokens": 5},
     }))
 else:
+    calls = 1
     if mode == "edit":
         Path("target.txt").write_text("changed\n")
         Path("new.txt").write_text("new\n")
+    if mode == "implement":
+        with open("impl.txt", "a") as f:
+            f.write("x\n")
+        sid = sys.argv[sys.argv.index("--session-id") + 1] if "--session-id" in sys.argv else "none"
+        counter = Path(os.environ["FAKE_STATE_DIR"]) / f"session-{sid}"
+        calls = int(counter.read_text()) + 1 if counter.exists() else 1
+        counter.write_text(str(calls))
     events = [
         {"type": "assistant.message", "data": {"content": "", "model": "m1"}},
         {"type": "assistant.message", "data": {"content": "copilot answer", "model": "m1"}},
         {"type": "session.usage_checkpoint", "data": {
-            "totalNanoAiu": 250000000,
-            "providerModelMetrics": [{"metrics": {"usage": {"inputTokens": 200, "outputTokens": 20}}}],
+            "totalNanoAiu": 250000000 * calls,
+            "providerModelMetrics": [{"metrics": {"usage": {"inputTokens": 200 * calls, "outputTokens": 20 * calls}}}],
         }},
         {"type": "result", "exitCode": 0, "usage": {"codeChanges": {"filesModified": ["target.txt"] if mode == "edit" else []}}},
     ]

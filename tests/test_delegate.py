@@ -344,7 +344,8 @@ class TestEdit(Env):
     def test_edit_reports_changes_and_allows_write(self):
         self.init_repo()
         (self.work / "preexisting.txt").write_text("u\n")  # 既存の未追跡は報告しない
-        code, out, err = self.run_cli("edit", "rename", "-C", str(self.work), env={"FAKE_MODE": "edit"})
+        code, out, err = self.run_cli("edit", "rename", "-C", str(self.work), "--backend", "copilot",
+                                      env={"FAKE_MODE": "edit"})
         self.assertEqual(code, 0, err)
         self.assertIn("target.txt", out)
         self.assertIn("new.txt", out)
@@ -357,11 +358,62 @@ class TestEdit(Env):
         self.assertNotIn("--allow-all", argv)
         self.assertNotIn("--allow-all-tools", argv)
 
-    def test_edit_has_no_fallback_and_agy_rejects_edit(self):
+    def agy_settings_of(self, call) -> dict:
+        argv = call["argv"]
+        return json.loads(argv[argv.index("--settings") + 1])
+
+    def test_edit_uses_agy_with_write_limited_to_workdir(self):
         self.init_repo()
-        code, _, err = self.run_cli("edit", "x", "-C", str(self.work), "--backend", "agy")
+        code, out, err = self.run_cli("edit", "rename", "-C", str(self.work), env={"FAKE_MODE": "edit"})
+        self.assertEqual(code, 0, err)
+        self.assertIn("target.txt", out)
+        call = self.calls()[0]
+        self.assertEqual(call["name"], "agy")
+        argv = call["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], "gemini-4-hydrogen-high")
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        perm = self.agy_settings_of(call)["permissions"]
+        work = os.path.realpath(self.work)
+        self.assertIn(f"write_file({work})", perm["allow"])
+        self.assertIn("command(ruff check)", perm["allow"])
+        self.assertFalse(any("pytest" in a or "unittest" in a for a in perm["allow"]))  # テストは任意コード実行になる
+        self.assertIn(f"write_file({work}/.git)", perm["deny"])
+        self.assertIn("mcp(*)", perm["deny"])
+        self.assertNotIn("command(*)", perm["deny"])
+        self.assertNotIn("write_file(*)", perm["deny"])
+        self.assertIn("ruff check", argv[argv.index("-p") + 1])  # 使えるコマンドをプロンプトでも伝える
+
+    def test_edit_with_secrets_blocks_agy_shell(self):
+        self.init_repo()
+        self.cfg.write_text(self.cfg.read_text().replace("[guard]\n", '[guard]\nsecret_policy = {agy = "allow", copilot = "mask"}\n'))
+        (self.work / ".gitignore").write_text(".env\n")
+        self.git("add", ".gitignore")
+        self.git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ignore")
+        (self.work / ".env").write_text("TOKEN=x\n")
+        code, _, err = self.run_cli("edit", "x", "-C", str(self.work), env={"FAKE_MODE": "edit"})
+        self.assertEqual(code, 0, err)
+        perm = self.agy_settings_of(self.calls()[0])["permissions"]
+        self.assertIn("command(*)", perm["deny"])
+        self.assertIn(f"write_file({os.path.realpath(self.work / '.env')})", perm["deny"])
+
+    def test_edit_falls_back_when_agy_failed_without_changes(self):
+        self.init_repo()
+        code, out, err = self.run_cli("edit", "x", "-C", str(self.work),
+                                      env={"FAKE_MODE_AGY": "fail", "FAKE_MODE_COPILOT": "edit"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["name"] for c in self.calls()], ["agy", "copilot"])
+
+    def test_edit_does_not_fall_back_after_partial_changes(self):
+        self.init_repo()
+        code, out, err = self.run_cli("edit", "x", "-C", str(self.work), env={"FAKE_MODE_AGY": "editfail"})
         self.assertEqual(code, 1)
-        self.assertIn("read-only", err)
+        self.assertEqual([c["name"] for c in self.calls()], ["agy"])
+        self.assertIn("not falling back", err)
+        self.assertIn("target.txt", out)
+
+    def test_agy_rejects_implement_mode(self):
+        with self.assertRaises(backends.BackendError):
+            backends.build_agy_argv("agy", "p", "", "implement", [], 60)
 
 
 class TestImplement(TestEdit):
@@ -444,7 +496,7 @@ class TestImplement(TestEdit):
         code, _, err = self.run_cli("implement", "x", "-C", str(self.work), "--test", "true",
                                     "--backend", "agy", env=self.fenv)
         self.assertEqual(code, cli.EXIT_FAIL)
-        self.assertIn("read-only", err)
+        self.assertIn("read and edit tasks only", err)
 
     def test_secret_masked_and_redacted_from_test_output(self):
         self.init_repo()
@@ -487,7 +539,7 @@ class TestGithub(Env):
     def test_gh_with_agy_is_rejected(self):
         code, _, err = self.run_cli("gh", "x", "-C", str(self.work), "--backend", "agy")
         self.assertEqual(code, 1)
-        self.assertIn("read-only tasks only", err)
+        self.assertIn("read and edit tasks only", err)
 
 
 class TestStatsAndParsers(Env):

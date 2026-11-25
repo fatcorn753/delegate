@@ -20,7 +20,7 @@ AI コーディングエージェント(Claude Code など)が、作業の一部
 | `summarize` | agy(`gemini-3.8-flash-low`) | copilot | 読み取りのみ |
 | `ask` | agy(`gemini-4-argon-medium`) | copilot | 読み取りのみ |
 | `gh` | copilot | なし | GitHub の読み取りのみ(ローカルのファイルには触れない) |
-| `edit` | copilot | なし | 作業ディレクトリ内のファイル書き込みのみ |
+| `edit` | agy(`gemini-4-hydrogen-high`) | copilot | 作業ディレクトリ内のファイル書き込みのみ。agy は静的検査と読み取り系 git だけ実行できる |
 | `implement` | copilot | なし | `edit` と同じ。テストは delegate が回して結果を差し戻す |
 
 モデルの既定値は、tokenguard の比較実験(2026-11-24)で決めました。下調べ・調べものは、設問の正答と引用の検証が満点だった中で、
@@ -31,6 +31,13 @@ AI コーディングエージェント(Claude Code など)が、作業の一部
 
 - **agy の読み取り専用**: `--settings` で `command(*)`・`write_file(*)`・`mcp(*)` を deny にします。
   モデルはファイル読み取りと検索ツールだけで調べます。
+- **agy の編集**(2026-11-26 から。Claude と Copilot の使用量を分散するため):
+  - 書き込みは `write_file(<作業ディレクトリ>)` だけを許可します。`.git` と秘匿ファイルへの書き込み、`mcp(*)` は deny にします。
+  - シェルは `ruff check`・`ruff format --check`・`pyright`・`git diff`・`git status` だけを許可します(設定 `tasks.edit.agy_commands`)。
+    テストの実行は許可しません。テストはリポジトリのコードを動かすので、agy が書き換えたテストを通じて任意のコードを実行できてしまうためです。テストは呼び出し側で回します。
+  - 秘匿ファイルがあるリポジトリでは、シェルを全面禁止(`command(*)` を deny)にします。秘匿ファイルを読めてシェルも使えると、外へ送る経路になるためです。
+  - agy が何も変えずに失敗したときだけ copilot に切り替えます。途中まで書き換えて失敗したときは切り替えず、変更の確認か取り消しを求めます。
+  - 未検証: agy の枠が尽きていたため、実際の agy で `.git` への書き込みが止まること、編集後にターンが終わることを確かめていません(偽の agy によるテストと、tokenguard の replay で `write_file(<dir>)` の外への書き込みが止まることは確認済み)。
 - **copilot**: シェルと内容検索のツールを常に外し、`--available-tools` で使えるツールを絞ります。
   読み取りでは `view`・`glob`、編集では `view`・`glob`・`apply_patch` だけです。`--disallow-temp-dir` も付けます。
 - **copilot の編集**: 書き込みは許可しますが、シェルは使わせません。
@@ -118,7 +125,7 @@ python3 -m unittest discover -s tests
 
 ## 制限
 
-- agy の読み取り専用モードではシェルを使えないため、`ls` や `git log` は実行できません。ファイルの読み取りと検索ツールで代わりに調べます。
+- agy の読み取り専用モード(survey・summarize・ask)ではシェルを使えないため、`ls` や `git log` は実行できません。ファイルの読み取りと検索ツールで代わりに調べます。
 - 応答形式は、確認時点のバージョン(agy 1.5.12、Copilot CLI 1.0.114)に合わせています。
 - 安全装置は委任の入口での確認と、委任先 CLI の権限設定の組み合わせです。委任先の挙動そのものを保証するものではありません。
 - 秘匿ファイルの中身による判定はパターンに一致したものだけです。独自形式の秘密情報は `secret_globs` に名前を足してください。

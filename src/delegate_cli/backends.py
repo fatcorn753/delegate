@@ -76,11 +76,50 @@ def agy_settings(masked: list[Path]) -> dict:
     return {**AGY_READONLY_SETTINGS, "permissions": {"deny": deny}}
 
 
+# agy に編集させるときに通すコマンドの既定。agy の command(...) は語の前方一致。
+# テストの実行は既定に入れない。テストはリポジトリのコードを動かすので、agy が書き換えたテストを
+# 通じて任意のコード(秘匿情報の送信など)を実行できてしまうため。静的な検査と読み取り系 git だけにする。
+AGY_EDIT_COMMANDS = ["ruff check", "ruff format --check", "pyright", "git diff", "git status"]
+
+
+def agy_edit_settings(cwd: Path, masked: list[Path], protect: list[Path], commands: list[str]) -> dict:
+    """書き込みは作業ディレクトリの中だけ。.git と秘匿ファイルへの書き込みは禁止する。
+
+    deny は allow より優先される。秘匿ファイルがあるリポジトリではシェルを全面禁止にする
+    (秘匿ファイルを読めてシェルも使えると、外へ送る経路になるため)。許可にないコマンドを
+    headless で求めると実行全体が止まるので、使えるコマンドはプロンプトでも伝える。
+    """
+    allow = [f"write_file({cwd})"]
+    deny = ["mcp(*)", f"write_file({cwd / '.git'})"]
+    deny += [f"write_file({p})" for p in protect]
+    deny += [f"read_file({p})" for p in masked]
+    if protect or not commands:
+        deny.append("command(*)")
+    else:
+        allow += [f"command({c})" for c in commands]
+    return {"agentMode": "", "permissions": {"allow": allow, "deny": deny}}
+
+
+def agy_edit_note(settings: dict) -> str:
+    cmds = [a[len("command("):-1] for a in settings["permissions"]["allow"] if a.startswith("command(")]
+    if not cmds:
+        return "\n\nYou cannot run any shell command. Use the file read/write tools only."
+    return ("\n\nShell commands you may run (anything else stops the run, so do not try): "
+            + ", ".join(cmds) + ". Run one command at a time; do not chain with ; && | or $( ). "
+            "Do not run tests; the caller runs them.")
+
+
 def build_agy_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: list[Path], timeout: int,
-                   masked: list[Path] | None = None) -> list[str]:
-    if mode != "read":
-        # 編集を許すと、headless で編集後にターンが終わらず print timeout まで止まった(2026-11-21)
-        raise BackendError(f"agy backend supports read-only tasks only (not {mode})")
+                   masked: list[Path] | None = None, edit_settings: dict | None = None) -> list[str]:
+    if mode == "edit":
+        if edit_settings is None:
+            raise BackendError("agy edit needs edit settings")
+        settings = edit_settings
+        prompt += agy_edit_note(edit_settings)
+    elif mode == "read":
+        settings = agy_settings(masked or [])
+    else:
+        raise BackendError(f"agy backend supports read and edit tasks only (not {mode})")
     argv = [
         cmd,
         "-p",
@@ -90,7 +129,7 @@ def build_agy_argv(cmd: str, prompt: str, model: str, mode: str, add_dirs: list[
         "--print-timeout",
         f"{max(timeout - 10, 30)}s",
         "--settings",
-        json.dumps(agy_settings(masked or [])),
+        json.dumps(settings),
     ]
     if model:
         argv += ["--model", model]
@@ -200,11 +239,15 @@ def parse_copilot(code: int, out: str, err: str) -> Result:
 
 def run(name: str, bcfg: dict, prompt: str, cwd: Path, model: str, mode: str,
         add_dirs: list[Path], timeout: int | None = None, masked: list[Path] | None = None,
-        session_id: str = "") -> Result:
+        session_id: str = "", protect: list[Path] | None = None, commands: list[str] | None = None) -> Result:
     timeout = int(timeout or bcfg.get("timeout", 600))
     cmd = bcfg.get("command", name)
     if name == "agy":
-        argv = build_agy_argv(cmd, prompt, model, mode, add_dirs, timeout, masked)
+        es = None
+        if mode == EDIT:
+            es = agy_edit_settings(cwd, masked or [], protect or [],
+                                   AGY_EDIT_COMMANDS if commands is None else commands)
+        argv = build_agy_argv(cmd, prompt, model, mode, add_dirs, timeout, masked, es)
         code, out, err, dur = _run(argv, cwd, timeout)
         r = parse_agy(code, out, err)
         r.model = r.model or model or "default"

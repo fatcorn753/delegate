@@ -86,10 +86,14 @@ DEFAULTS: dict[str, Any] = {
             "Reply in the language of the request.",
         },
         "edit": {
-            "backend": "copilot",
-            "fallback": "",
+            # 2026-11-26: 使用量を分散するため agy を先にする。2026-11-24 の比較(tokenguard README)で
+            # hydrogen-high は 94/95 で速い。書き込みは作業ディレクトリの中だけ(backends.agy_edit_settings)
+            "backend": "agy",
+            "fallback": "copilot",
             "mode": EDIT,
-            "model": "",
+            "model": "gemini-4-hydrogen-high",
+            # agy に許すコマンド(語の前方一致)。テストの実行は入れない理由は backends.AGY_EDIT_COMMANDS
+            "agy_commands": ["ruff check", "ruff format --check", "pyright", "git diff", "git status"],
             "preamble": "Make only the requested change, nothing else. Do not commit, push or run "
             "destructive commands. Reply in the language of the request with a short summary.",
         },

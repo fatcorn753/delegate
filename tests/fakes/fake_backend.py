@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """テスト用の偽 agy / copilot。argv を記録し、FAKE_MODE に応じた出力を返す。
 
-FAKE_MODE: ok | fail | garbage | edit(copilot のみ: cwd の target.txt を書き換える)
+FAKE_MODE: ok | fail | garbage | edit(cwd の target.txt を書き換える)
+          | editfail(agy のみ: target.txt を書き換えてから失敗する)
           | implement(copilot のみ: 呼ばれるたびに impl.txt へ 1 行足し、使用量を session の累計で返す)
 """
 
@@ -18,6 +19,10 @@ if log:
 
 mode = os.environ.get(f"FAKE_MODE_{name.upper()}", os.environ.get("FAKE_MODE", "ok"))
 
+if mode == "editfail":
+    Path("target.txt").write_text("half\n")
+    print("crashed", file=sys.stderr)
+    sys.exit(1)
 if mode == "fail":
     print("quota exceeded", file=sys.stderr)
     sys.exit(1)
@@ -26,6 +31,8 @@ if mode == "garbage":
     sys.exit(0)
 
 if name == "agy":
+    if mode == "edit":
+        Path("target.txt").write_text("changed by agy\n")
     print(json.dumps({
         "conversation_id": "x",
         "status": "SUCCESS",

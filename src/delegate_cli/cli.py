@@ -173,7 +173,8 @@ def cmd_run(args: argparse.Namespace, cfg: dict) -> int:
                     _err(f"{name}: hiding {len(masked)} secret-like file(s) from the backend")
                 try:
                     r = backends.run(name, cfg["backends"][name], full_prompt, run_dir, model, mode,
-                                     add_dirs, args.timeout, masked)
+                                     add_dirs, args.timeout, masked, protect=scan.secrets,
+                                     commands=task.get("agy_commands"))
                 except backends.BackendError as e:
                     r = backends.Result(backend=name, ok=False, error=str(e), model=model)
             results.append(r)
@@ -194,6 +195,10 @@ def cmd_run(args: argparse.Namespace, cfg: dict) -> int:
                 "error": r.error[:300],
             })
             if r.ok:
+                break
+            if mode == EDIT and i + 1 < len(chain) and _edit_report(cwd, before) != "no file changes":
+                # 途中まで書き換えた上に別の委任先が重ねて編集すると、どちらの変更か分からなくなる
+                _err(f"{name} failed after changing files; not falling back (review or revert the changes)")
                 break
             if i + 1 < len(chain):
                 first = r.error.strip().splitlines()[0] if r.error.strip() else "no answer"

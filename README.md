@@ -16,12 +16,16 @@ AI コーディングエージェント(Claude Code など)が、作業の一部
 
 | タスク | 既定の委任先 | フォールバック | 権限 |
 | --- | --- | --- | --- |
-| `survey` | agy | copilot | 読み取りのみ |
+| `survey` | agy(`gemini-4-argon-medium`) | copilot | 読み取りのみ |
 | `summarize` | agy(`gemini-3.8-flash-low`) | copilot | 読み取りのみ |
-| `ask` | agy | copilot | 読み取りのみ |
+| `ask` | agy(`gemini-4-argon-medium`) | copilot | 読み取りのみ |
 | `gh` | copilot | なし | GitHub の読み取りのみ(ローカルのファイルには触れない) |
 | `edit` | copilot | なし | 作業ディレクトリ内のファイル書き込みのみ |
 | `implement` | copilot | なし | `edit` と同じ。テストは delegate が回して結果を差し戻す |
+
+モデルの既定値は、tokenguard の比較実験(2026-11-24)で決めました。下調べ・調べものは、設問の正答と引用の検証が満点だった中で、
+速い Argon medium にしました。要約は、どのモデルも満点だったので、最も軽い Flash low のままです。
+根拠は [tokenguard の README](https://github.com/fatcorn753/tokenguard#モデルと役割の分担2026-11-24) にあります。
 
 権限は次の設定で絞っています。
 

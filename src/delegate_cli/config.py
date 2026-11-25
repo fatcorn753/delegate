@@ -55,7 +55,8 @@ DEFAULTS: dict[str, Any] = {
             "mode": READ,
             # 作業ディレクトリのファイル一覧をプロンプトに添える
             "list_files": True,
-            "model": "",
+            # 2026-11-24 の比較(tokenguard README)で、下調べの設問 21/21・引用の検証 16/16。中位で速い
+            "model": "gemini-4-argon-medium",
             "preamble": "Read-only investigation. Do not modify any file. "
             "Answer with the conclusion first, concisely, citing file paths. "
             "Reply in the language of the request.",
@@ -72,7 +73,7 @@ DEFAULTS: dict[str, Any] = {
             "backend": "agy",
             "fallback": "copilot",
             "mode": READ,
-            "model": "",
+            "model": "gemini-4-argon-medium",
             "preamble": "Answer the question concisely. Do not modify any file. "
             "Reply in the language of the request.",
         },

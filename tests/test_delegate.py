@@ -99,6 +99,13 @@ class TestRun(Env):
         argv = self.calls()[1]["argv"]
         self.assertNotIn("Files in the working directory", argv[argv.index("-p") + 1])
 
+    def test_survey_and_ask_default_to_argon_medium(self):
+        for task in ("survey", "ask"):
+            code, out, err = self.run_cli(task, "q", "-C", str(self.work))
+            self.assertEqual(code, 0, err)
+            argv = self.calls()[-1]["argv"]
+            self.assertEqual(argv[argv.index("--model") + 1], "gemini-4-argon-medium")
+
     def test_summarize_passes_flash_model_and_files(self):
         f = self.work / "notes.txt"
         f.write_text("hello")

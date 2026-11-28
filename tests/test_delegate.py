@@ -257,6 +257,23 @@ class TestGuard(Env):
         found = guard.find_secrets(self.work, DEFAULTS["guard"]).secrets
         self.assertEqual(sorted(f.name for f in found), ["config.json.migrated-to-server", "notes.txt"])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs mkfifo")
+    def test_fifo_is_not_opened(self):
+        # FIFO を読み取りで開くと書き込み側が現れるまで戻らない。別スレッドで走らせて止まらないことを確かめる
+        import threading
+        os.mkfifo(self.work / "pipe")
+        (self.work / ".env").write_text("TOKEN=x")
+        result = {}
+        t = threading.Thread(target=lambda: result.update(scan=guard.find_secrets(self.work, DEFAULTS["guard"])), daemon=True)
+        t.start()
+        t.join(5)
+        if t.is_alive():
+            # 止まったスレッドを解放してから失敗させる
+            with open(self.work / "pipe", "wb"):
+                pass
+            self.fail("find_secrets blocked on a FIFO")
+        self.assertEqual([f.name for f in result["scan"].secrets], [".env"])
+
     def test_git_config_with_credential_url(self):
         (self.work / ".git").mkdir()
         (self.work / ".git" / "config").write_text('[remote "origin"]\n\turl = https://me:ghp_' + "a" * 36 + "@github.com/x/y\n")

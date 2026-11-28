@@ -350,7 +350,7 @@ def build_parser(tasks: dict[str, dict]) -> argparse.ArgumentParser:
         sp.add_argument("--model", default=None, help="override model")
         sp.add_argument("--backend", choices=["agy", "copilot"], help="force a backend (disables fallback)")
         sp.add_argument("--no-fallback", action="store_true")
-        sp.add_argument("--timeout", type=int, help="seconds")
+        sp.add_argument("--timeout", type=int, help="seconds for the backend CLI (not the pre-run secret scan)")
         sp.add_argument("--json", action="store_true", help="print the full result as JSON")
         if tasks[t].get("mode") == IMPLEMENT:
             sp.add_argument("--test", help="test command run after each round; exit 0 means done (required)")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import stat
 import sys
 import unicodedata
 from dataclasses import dataclass, field
@@ -74,7 +75,12 @@ def _content_is_secret(path: Path, guard: dict) -> bool:
     if not guard.get("scan_content", True):
         return False
     try:
-        if path.stat().st_size > int(guard.get("max_file_bytes", 262144)):
+        st = path.stat()
+        # FIFO は書き込み側が現れるまで open が戻らない(/tmp に置かれていることがある)。
+        # ソケットやデバイスも中身を読む対象ではないので、通常ファイルだけを開く
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        if st.st_size > int(guard.get("max_file_bytes", 262144)):
             return False
         data = path.read_bytes()
     except OSError:
